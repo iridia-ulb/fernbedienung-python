@@ -3,7 +3,7 @@
 The python script in this repository is designed to be run by a robot that needs to be controlled remotely.
 
 ## Installation
-A typical usecase involves running this python script at boot once the network comes online. For example with systemd, one could define a service file as follows:
+A typical usecase involves running this python script at boot once the network comes online. For example with systemd, one could define a unit file as follows:
 ```
 [Unit]
 Description=Fernbedienung
