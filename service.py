@@ -131,6 +131,10 @@ async def run_process(uuid: str, working_dir: str, target: str, args: list,
                     await process_tx.put(response)
                     read_stderr_task = event_loop.create_task(subprocess.stderr.read(1024))
                     pending_tasks.add(read_stderr_task)
+                elif request_task in pending_tasks:
+                    # stderr is closing, clean up request_task if it is pending
+                    request_task.cancel()
+                    pending_tasks.discard(request_task)
             if read_stdout_task in complete_tasks:
                 stdout = list(await read_stdout_task)
                 if stdout:
@@ -138,6 +142,10 @@ async def run_process(uuid: str, working_dir: str, target: str, args: list,
                     await process_tx.put(response)
                     read_stdout_task = event_loop.create_task(subprocess.stdout.read(1024))
                     pending_tasks.add(read_stdout_task)
+                elif request_task in pending_tasks:
+                    # stdout is closing, clean up request_task if it is pending
+                    request_task.cancel()
+                    pending_tasks.discard(request_task)
             if request_task in complete_tasks:
                 request = await request_task
                 if 'Terminate' in request:
