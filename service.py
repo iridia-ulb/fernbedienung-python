@@ -1,9 +1,10 @@
 # imports
 import asyncio
-import logging
-import sys
 import json
+import logging
+import os
 import signal
+import sys
 
 # constants
 FRAME_HEADER_LEN = 4
@@ -78,16 +79,15 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
                         # build a shell command for running the task
                         target = run_process_request['target']
                         working_dir = run_process_request['working_dir']
-                        args = ' '.join(run_process_request['args'])
-                        command = 'cd {} && {} {}'.format(working_dir, target, args)
+                        args = run_process_request['args']
                         # queues for communicating with this process
                         process_rx = asyncio.Queue()
                         process_tx = client_tx_queue
                         process_rxs[uuid] = process_rx
                         # run process
-                        run_process_coroutine = run_process(uuid, command, process_tx, process_rx)
+                        run_process_coroutine = run_process(uuid, working_dir, target, args, process_tx, process_rx)
                         asyncio.get_event_loop().create_task(run_process_coroutine)
-                    if 'StandardInput' in process_request or 'Signal' in process_request:
+                    if 'StandardInput' in process_request or 'Terminate' in process_request:
                         if uuid in process_rxs:
                             # forward the request to the process handler
                             await process_rxs[uuid].put(process_request)
@@ -98,58 +98,61 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
     tx.close()
     await tx.wait_closed()
         
-async def run_process(uuid: str, command: str, process_tx: asyncio.Queue, process_rx: asyncio.Queue):
-    logger.info('running: \'%s\'', command)
-    subprocess = await asyncio.create_subprocess_shell(
-        command,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE)
-    # notify the client that the process started
-    response = [uuid, {'Process': 'Started'}]
-    await process_tx.put(response)
-    # respond to client and process events
-    event_loop = asyncio.get_event_loop()
-    read_stderr_task = event_loop.create_task(subprocess.stderr.read(1024))
-    read_stdout_task = event_loop.create_task(subprocess.stdout.read(1024))
-    request_task = event_loop.create_task(process_rx.get())
-    wait_task = event_loop.create_task(subprocess.wait())
-    pending_tasks = {read_stderr_task, read_stdout_task, request_task, wait_task}
-    while pending_tasks:
-        complete_tasks, pending_tasks = await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
-        if read_stderr_task in complete_tasks:
-            stderr = list(await read_stderr_task)
-            response = [uuid, {'Process': {'StandardError' : stderr}}]
-            await process_tx.put(response)
-            if not subprocess.stderr.at_eof():
-                read_stderr_task = event_loop.create_task(subprocess.stderr.read(1024))
-                pending_tasks.add(read_stderr_task)
-        if read_stdout_task in complete_tasks:
-            stdout = list(await read_stdout_task)
-            response = [uuid, {'Process': {'StandardOutput' : stdout}}]
-            await process_tx.put(response)
-            if not subprocess.stdout.at_eof():
-                read_stdout_task = event_loop.create_task(subprocess.stdout.read(1024))
-                pending_tasks.add(read_stdout_task)
-        if request_task in complete_tasks:
-            request = await request_task
-            if 'Signal' in request:
-                signal = request['Signal']
-                subprocess.send_signal(signal)
-            if 'StandardInput' in request:
-                stdin = bytes(request['StandardInput'])
-                subprocess.stdin.write(stdin)
-                await subprocess.stdin.drain()
-            # recreate the request task
-            request_task = event_loop.create_task(process_rx.get())
-            pending_tasks.add(request_task)
-        if wait_task in complete_tasks:
-            return_code = await wait_task
-            response = [uuid, {'Process': {'Terminated' : return_code == 0}}]
-            # queue the terminated message
-            await process_tx.put(response)
-            break
-    logger.info('terminated: \'%s\'', command)
+async def run_process(uuid: str, working_dir: str, target: str, args: list[str],
+                      process_tx: asyncio.Queue, process_rx: asyncio.Queue):
+    prev_working_dir = os.getcwd()
+    try:
+        os.chdir(working_dir)
+        logger.info('running: \'%s\'', target)
+        subprocess = await asyncio.create_subprocess_exec(target, *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE)
+        os.chdir(prev_working_dir)
+    except Exception as error:
+        response = [uuid, {'Error' : str(error)}]
+        await process_tx.put(response)
+    else:
+        # notify the client that the process started
+        response = [uuid, 'Ok'}]
+        await process_tx.put(response)
+        # respond to client and process events
+        event_loop = asyncio.get_event_loop()
+        read_stderr_task = event_loop.create_task(subprocess.stderr.read(1024))
+        read_stdout_task = event_loop.create_task(subprocess.stdout.read(1024))
+        request_task = event_loop.create_task(process_rx.get())
+        pending_tasks = {read_stderr_task, read_stdout_task, request_task}
+        while pending_tasks:
+            complete_tasks, pending_tasks = await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
+            if read_stderr_task in complete_tasks:
+                stderr = list(await read_stderr_task)
+                if stderr:
+                    response = [uuid, {'Process': {'StandardError' : stderr}}]
+                    await process_tx.put(response)
+                    read_stderr_task = event_loop.create_task(subprocess.stderr.read(1024))
+                    pending_tasks.add(read_stderr_task)
+            if read_stdout_task in complete_tasks:
+                stdout = list(await read_stdout_task)
+                if stdout:
+                    response = [uuid, {'Process': {'StandardOutput' : stdout}}]
+                    await process_tx.put(response)
+                    read_stdout_task = event_loop.create_task(subprocess.stdout.read(1024))
+                    pending_tasks.add(read_stdout_task)
+            if request_task in complete_tasks:
+                request = await request_task
+                if 'Terminate' in request:
+                    subprocess.terminate()
+                if 'StandardInput' in request:
+                    stdin = bytes(request['StandardInput'])
+                    subprocess.stdin.write(stdin)
+                    await subprocess.stdin.drain()
+                    # recreate the request task (only if stdin)
+                    request_task = event_loop.create_task(process_rx.get())
+                    pending_tasks.add(request_task)
+        logger.info('terminated: \'%s\'', target)
+        # queue the terminated message
+        response = [uuid, {'Process': {'Terminated' : await subprocess.wait() == 0}}]
+        await process_tx.put(response)
 
 
 async def service_start():
