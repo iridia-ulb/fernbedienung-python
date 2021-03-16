@@ -98,7 +98,7 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
     tx.close()
     await tx.wait_closed()
         
-async def run_process(uuid: str, working_dir: str, target: str, args: list[str],
+async def run_process(uuid: str, working_dir: str, target: str, args: list,
                       process_tx: asyncio.Queue, process_rx: asyncio.Queue):
     prev_working_dir = os.getcwd()
     try:
