@@ -114,7 +114,7 @@ async def run_process(uuid: str, working_dir: str, target: str, args: list[str],
         await process_tx.put(response)
     else:
         # notify the client that the process started
-        response = [uuid, 'Ok'}]
+        response = [uuid, 'Ok']
         await process_tx.put(response)
         # respond to client and process events
         event_loop = asyncio.get_event_loop()
@@ -151,7 +151,7 @@ async def run_process(uuid: str, working_dir: str, target: str, args: list[str],
                     pending_tasks.add(request_task)
         logger.info('terminated: \'%s\'', target)
         # queue the terminated message
-        response = [uuid, {'Process': {'Terminated' : await subprocess.wait() == 0}}]
+        response = [uuid, {'Process': {'Terminated' : (await subprocess.wait()) == 0}}]
         await process_tx.put(response)
 
 
