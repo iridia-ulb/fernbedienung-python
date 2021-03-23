@@ -92,6 +92,7 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
                             # forward the request to the process handler
                             await process_rxs[uuid].put(process_request)
     # client handler done
+    [task.cancel() for task in pending_tasks]
     if tx.can_write_eof():
         tx.write_eof()
     await tx.drain()
