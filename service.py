@@ -5,6 +5,7 @@ import logging
 import os
 import signal
 import sys
+import base64
 
 # constants
 FRAME_HEADER_LEN = 4
@@ -126,8 +127,9 @@ async def run_process(uuid: str, working_dir: str, target: str, args: list,
         while pending_tasks:
             complete_tasks, pending_tasks = await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
             if read_stderr_task in complete_tasks:
-                stderr = list(await read_stderr_task)
+                stderr = await read_stderr_task
                 if stderr:
+                    stderr = base64.b64encode(stderr).decode("utf-8")
                     response = [uuid, {'Process': {'StandardError' : stderr}}]
                     await process_tx.put(response)
                     read_stderr_task = event_loop.create_task(subprocess.stderr.read(1024))
@@ -137,9 +139,10 @@ async def run_process(uuid: str, working_dir: str, target: str, args: list,
                     request_task.cancel()
                     pending_tasks.discard(request_task)
             if read_stdout_task in complete_tasks:
-                stdout = list(await read_stdout_task)
+                stdout = await read_stdout_task
                 if stdout:
-                    response = [uuid, {'Process': {'StandardOutput' : stdout}}]
+                    stdout = base64.b64encode(stdout).decode("utf-8")
+                    response = [uuid, {'Process': {'StandardOutput': stdout}}]
                     await process_tx.put(response)
                     read_stdout_task = event_loop.create_task(subprocess.stdout.read(1024))
                     pending_tasks.add(read_stdout_task)
@@ -152,8 +155,8 @@ async def run_process(uuid: str, working_dir: str, target: str, args: list,
                 if 'Terminate' in request:
                     subprocess.terminate()
                 if 'StandardInput' in request:
-                    stdin = bytes(request['StandardInput'])
-                    subprocess.stdin.write(stdin)
+                    stdin = request['StandardInput']
+                    subprocess.stdin.write(base64.b64decode(stdin))
                     await subprocess.stdin.drain()
                     # recreate the request task (only if stdin)
                     request_task = event_loop.create_task(process_rx.get())
