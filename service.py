@@ -1,11 +1,11 @@
 # imports
 import asyncio
+import base64
 import json
 import logging
 import os
 import signal
 import sys
-import base64
 
 # constants
 FRAME_HEADER_LEN = 4
@@ -51,9 +51,6 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
                     continue
                 # extract uuid and request
                 uuid, request = message[0], message[1]
-                if 'Ping' in request:
-                    response = [uuid, 'Ok']
-                    await client_tx_queue.put(response)
                 if 'Upload' in request:
                     upload_request = request['Upload']
                     contents = bytes(upload_request['contents'])
@@ -77,7 +74,7 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
                     process_request = request['Process']
                     if 'Run' in process_request:
                         run_process_request = process_request['Run']
-                        # build a shell command for running the task
+                        # extract the process attributes
                         target = run_process_request['target']
                         working_dir = run_process_request['working_dir']
                         args = run_process_request['args']
@@ -86,8 +83,8 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
                         process_tx = client_tx_queue
                         process_rxs[uuid] = process_rx
                         # run process
-                        run_process_coroutine = run_process(uuid, working_dir, target, args, process_tx, process_rx)
-                        asyncio.get_event_loop().create_task(run_process_coroutine)
+                        process_coroutine = process(uuid, working_dir, target, args, process_tx, process_rx)
+                        asyncio.get_event_loop().create_task(process_coroutine)
                     if 'StandardInput' in process_request or 'Terminate' in process_request:
                         if uuid in process_rxs:
                             # forward the request to the process handler
@@ -99,9 +96,9 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
     await tx.drain()
     tx.close()
     await tx.wait_closed()
-        
-async def run_process(uuid: str, working_dir: str, target: str, args: list,
-                      process_tx: asyncio.Queue, process_rx: asyncio.Queue):
+
+async def process(uuid: str, working_dir: str, target: str, args: list,
+                  process_tx: asyncio.Queue, process_rx: asyncio.Queue):
     prev_working_dir = os.getcwd()
     try:
         os.chdir(working_dir)
@@ -165,7 +162,6 @@ async def run_process(uuid: str, working_dir: str, target: str, args: list,
         # queue the terminated message
         response = [uuid, {'Process': {'Terminated' : (await subprocess.wait()) == 0}}]
         await process_tx.put(response)
-
 
 async def service_start():
     # create server instance
