@@ -1,17 +1,21 @@
 # imports
 import asyncio
 import base64
+import fcntl
 import json
 import logging
+import mmap
 import os
 import signal
 import sys
+import v4l2
 
 # constants
 FRAME_HEADER_LEN = 4
 
 async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
     process_rxs = {}
+    stream_rxs = {}
     client_tx_queue = asyncio.Queue()
     buffer = bytearray()
     event_loop = asyncio.get_event_loop()
@@ -89,6 +93,25 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
                         if uuid in process_rxs:
                             # forward the request to the process handler
                             await process_rxs[uuid].put(process_request)
+                if 'Stream' in request:
+                    stream_request = request['Stream']
+                    if 'Start' in stream_request:
+                        start_stream_request = stream_request['Start']
+                        # extract the stream attributes
+                        device = start_stream_request['device']
+                        width = int(start_stream_request['width'])
+                        height = int(start_stream_request['height'])
+                        # queues for communicating with this stream
+                        stream_rx = asyncio.Queue()
+                        stream_tx = client_tx_queue
+                        stream_rxs[uuid] = stream_rx
+                        # start stream
+                        stream_coroutine = stream(uuid, device, width, height, stream_tx, stream_rx)
+                        asyncio.get_event_loop().create_task(stream_coroutine)
+                    if 'Stop' in stream_request:
+                        if uuid in stream_rxs:
+                            # forward the request to the stream handler
+                            await stream_rxs[uuid].put(stream_request)
     # client handler done
     [task.cancel() for task in pending_tasks]
     if tx.can_write_eof():
@@ -96,6 +119,83 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
     await tx.drain()
     tx.close()
     await tx.wait_closed()
+
+async def stream(uuid: str, device: str, width: int, height: int,
+                 stream_tx: asyncio.Queue, stream_rx: asyncio.Queue):
+    try:
+        logger.info('starting: \'%s\'', device)
+        dev = open(device, 'rb+', buffering=0)
+        cap = v4l2.v4l2_capability()
+        fcntl.ioctl(dev, v4l2.VIDIOC_QUERYCAP, cap)
+        if not bool(cap.capabilities & v4l2.V4L2_CAP_VIDEO_CAPTURE):
+            raise Exception(device + ' does not support capture')
+        if not bool(cap.capabilities & v4l2.V4L2_CAP_STREAMING):
+            raise Exception(device + ' does not support streaming')
+        capture_format = v4l2.v4l2_format()
+        capture_format.type = v4l2.V4L2_BUF_TYPE_VIDEO_CAPTURE
+        # get current settings
+        fcntl.ioctl(dev, v4l2.VIDIOC_G_FMT, capture_format)
+        # set the pixel format to MJPEG
+        capture_format.fmt.pix.pixelformat = v4l2.V4L2_PIX_FMT_MJPEG
+        capture_format.fmt.pix.width = width
+        capture_format.fmt.pix.height = height
+        # update the settings
+        fcntl.ioctl(dev, v4l2.VIDIOC_S_FMT, capture_format)
+        # request a buffer
+        request = v4l2.v4l2_requestbuffers()
+        request.type = v4l2.V4L2_BUF_TYPE_VIDEO_CAPTURE
+        request.memory = v4l2.V4L2_MEMORY_MMAP
+        request.count = 1
+        fcntl.ioctl(dev, v4l2.VIDIOC_REQBUFS, request)
+        # query buffer for mmap
+        buffer = v4l2.v4l2_buffer()
+        buffer.type = v4l2.V4L2_BUF_TYPE_VIDEO_CAPTURE
+        buffer.memory = v4l2.V4L2_MEMORY_MMAP
+        buffer.index = 0
+        fcntl.ioctl(dev, v4l2.VIDIOC_QUERYBUF, buffer)
+        mmap_buffer = mmap.mmap(dev.fileno(), buffer.length, mmap.MAP_SHARED,
+            mmap.PROT_READ | mmap.PROT_WRITE, offset=buffer.m.offset)
+    except Exception as error:
+        response = [uuid, {'Error' : str(error)}]
+        await stream_tx.put(response)
+    else:
+        buffer_type = v4l2.v4l2_buf_type(v4l2.V4L2_BUF_TYPE_VIDEO_CAPTURE)
+        fcntl.ioctl(dev, v4l2.VIDIOC_STREAMON, buffer_type)
+        # enqueue the buffer
+        fcntl.ioctl(dev, v4l2.VIDIOC_QBUF, buffer)
+        # notify the client that the process started
+        response = [uuid, 'Ok']
+        await stream_tx.put(response)
+        # respond to client and process events
+        event_loop = asyncio.get_event_loop()
+        capture_task = event_loop.create_task(asyncio.sleep(0.5))
+        request_task = event_loop.create_task(stream_rx.get())
+        pending_tasks = {capture_task, request_task}
+        while pending_tasks:
+            complete_tasks, pending_tasks = await asyncio.wait(pending_tasks, return_when=asyncio.FIRST_COMPLETED)
+            if capture_task in complete_tasks:
+                await capture_task
+                # dequeue the buffer
+                fcntl.ioctl(dev, v4l2.VIDIOC_DQBUF, buffer)
+                # read the buffer
+                frame = mmap_buffer.read()
+                mmap_buffer.seek(0)
+                # enqueue the buffer
+                fcntl.ioctl(dev, v4l2.VIDIOC_QBUF, buffer)
+                frame = base64.b64encode(frame).decode("utf-8")
+                response = [uuid, {'Stream': {'Frame': frame}}]
+                await stream_tx.put(response)
+                capture_task = event_loop.create_task(asyncio.sleep(1))
+                pending_tasks.add(capture_task)
+            if request_task in complete_tasks:
+                request = await request_task
+                if 'Stop' in request:
+                    capture_task.cancel()
+                    pending_tasks.discard(capture_task)
+        # dequeue the buffer
+        fcntl.ioctl(dev, v4l2.VIDIOC_DQBUF, buffer)
+        fcntl.ioctl(dev, v4l2.VIDIOC_STREAMOFF, buffer_type)
+        logger.info('stopped: \'%s\'', device)
 
 async def process(uuid: str, working_dir: str, target: str, args: list,
                   process_tx: asyncio.Queue, process_rx: asyncio.Queue):
