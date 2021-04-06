@@ -47,7 +47,7 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
                 try:
                     message = json.loads(message)
                 except JSONDecodeError:
-                    logger.warn('Could not decode message')
+                    logger.warning('Could not decode message')
                     continue
                 # extract uuid and request
                 uuid, request = message[0], message[1]
@@ -74,16 +74,12 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
                     process_request = request['Process']
                     if 'Run' in process_request:
                         run_process_request = process_request['Run']
-                        # extract the process attributes
-                        target = run_process_request['target']
-                        working_dir = run_process_request['working_dir']
-                        args = run_process_request['args']
                         # queues for communicating with this process
                         process_rx = asyncio.Queue()
                         process_tx = client_tx_queue
                         process_rxs[uuid] = process_rx
                         # run process
-                        process_coroutine = process(uuid, working_dir, target, args, process_tx, process_rx)
+                        process_coroutine = process(uuid, run_process_request, process_tx, process_rx)
                         asyncio.get_event_loop().create_task(process_coroutine)
                     if 'StandardInput' in process_request or 'Terminate' in process_request:
                         if uuid in process_rxs:
@@ -97,18 +93,27 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
     tx.close()
     await tx.wait_closed()
 
-async def process(uuid: str, working_dir: str, target: str, args: list,
-                  process_tx: asyncio.Queue, process_rx: asyncio.Queue):
-    prev_working_dir = os.getcwd()
+async def process(uuid: str, run_process_request: dict, process_tx: asyncio.Queue, process_rx: asyncio.Queue):
     try:
-        os.chdir(working_dir)
-        logger.info('running: \'%s\'', target)
-        subprocess = await asyncio.create_subprocess_exec(target, *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE)
-        os.chdir(prev_working_dir)
+        target = run_process_request['target']
+        args = run_process_request['args']
+        logger.info('running: %s %s', target, ' '.join(args))
+        if 'working_dir' in run_process_request:
+            working_dir = run_process_request['working_dir']
+            subprocess = await asyncio.create_subprocess_exec(target, *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=working_dir)
+        else:
+            subprocess = await asyncio.create_subprocess_exec(target, *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
     except Exception as error:
+        # report the error locally
+        logger.warning('Could not start process: %s', str(error))
+        # send the error to the client as a response
         response = [uuid, {'Error' : str(error)}]
         await process_tx.put(response)
     else:
