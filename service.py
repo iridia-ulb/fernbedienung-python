@@ -53,19 +53,19 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
                 uuid, request = message[0], message[1]
                 if 'Reboot' in request:
                     # send response
-                    response = [uuid, 'Ok']
-                    await client_tx_queue.put(response)
-                    # sleep one second
-                    await asyncio.sleep(1)
+                    response = json.dumps([uuid, 'Ok']).encode('utf-8')
+                    response_length = len(response).to_bytes(4, 'big')
+                    tx.write(response_length + response)
+                    await tx.drain()
                     # execute reboot
                     reboot = await asyncio.create_subprocess_exec("reboot")
                     await reboot.wait()
                 if 'Halt' in request:
                     # send response
-                    response = [uuid, 'Ok']
-                    await client_tx_queue.put(response)
-                    # sleep one second
-                    await asyncio.sleep(1)
+                    response = json.dumps([uuid, 'Ok']).encode('utf-8')
+                    response_length = len(response).to_bytes(4, 'big')
+                    tx.write(response_length + response)
+                    await tx.drain()
                     # execute halt
                     halt = await asyncio.create_subprocess_exec("halt")
                     await halt.wait()
