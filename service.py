@@ -51,6 +51,24 @@ async def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
                     continue
                 # extract uuid and request
                 uuid, request = message[0], message[1]
+                if 'Reboot' in request:
+                    # send response
+                    response = [uuid, 'Ok']
+                    await client_tx_queue.put(response)
+                    # sleep one second
+                    await asyncio.sleep(1)
+                    # execute reboot
+                    reboot = await asyncio.create_subprocess_exec("reboot")
+                    await reboot.wait()
+                if 'Halt' in request:
+                    # send response
+                    response = [uuid, 'Ok']
+                    await client_tx_queue.put(response)
+                    # sleep one second
+                    await asyncio.sleep(1)
+                    # execute halt
+                    halt = await asyncio.create_subprocess_exec("halt")
+                    await halt.wait()
                 if 'Upload' in request:
                     upload_request = request['Upload']
                     contents = bytes(upload_request['contents'])
