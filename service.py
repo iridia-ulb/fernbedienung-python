@@ -203,10 +203,17 @@ def service_stop():
     asyncio.get_event_loop().stop()
 
 # set up the logger
-logging.basicConfig(level=logging.INFO,
-                    stream=sys.stderr,
-                    format="[%(asctime)s %(levelname)-5s %(name)s] %(message)s",
-                    datefmt="%Y-%m-%dT%H:%M:%SZ")
+if sys.argv[1] == '--log' and sys.argv[2] is not None:
+    logging.basicConfig(level=logging.INFO,
+                        filename=sys.argv[2],
+                        filemode='w',
+                        format="[%(asctime)s %(levelname)-5s %(name)s] %(message)s",
+                        datefmt="%Y-%m-%dT%H:%M:%SZ")
+else:
+    logging.basicConfig(level=logging.INFO,
+                        stream=sys.stderr,
+                        format="[%(asctime)s %(levelname)-5s %(name)s] %(message)s",
+                        datefmt="%Y-%m-%dT%H:%M:%SZ")
 logger = logging.getLogger('fernbedienung')
 
 # set up service event loop
