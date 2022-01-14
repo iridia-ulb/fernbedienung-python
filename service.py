@@ -112,7 +112,6 @@ def client_handler(rx: asyncio.StreamReader, tx: asyncio.StreamWriter):
         tx.write_eof()
     yield from tx.drain()
     tx.close()
-    #yield from tx.wait_closed() # method not defined
 
 @asyncio.coroutine
 def process(uuid: str, run_process_request: dict, process_tx: asyncio.Queue, process_rx: asyncio.Queue):
@@ -194,7 +193,6 @@ def process(uuid: str, run_process_request: dict, process_tx: asyncio.Queue, pro
 def service_start():
     server = yield from asyncio.start_server(client_handler, '0.0.0.0', 17653, loop=event_loop)
     logger.info('Started server on {}'.format(server.sockets[0].getsockname()))
-    #yield from server.serve_forever() #method not defined
 
 @asyncio.coroutine
 def service_stop():
@@ -205,7 +203,7 @@ def service_stop():
     asyncio.get_event_loop().stop()
 
 # set up the logger
-logging.basicConfig(level=logging.DEBUG, #INFO
+logging.basicConfig(level=logging.INFO,
                     stream=sys.stderr,
                     format="[%(asctime)s %(levelname)-5s %(name)s] %(message)s",
                     datefmt="%Y-%m-%dT%H:%M:%SZ")
@@ -213,7 +211,6 @@ logger = logging.getLogger('fernbedienung')
 
 # set up service event loop
 event_loop = asyncio.get_event_loop()
-event_loop.set_debug(enabled=True) ################# to remove
 event_loop.add_signal_handler(signal.SIGINT,
     lambda : asyncio.get_event_loop().create_task(service_stop()))
 try:
